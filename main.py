@@ -2,11 +2,12 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import struct, json, shutil, os, copy
 import pc as PC
+import sao_check as SC
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 ITEM_SPACING_MIN = 0x30
 ITEM_SPACING_MAX = 0x70
-HAS_CHIPS = {'weapon', 'costume', 'accessory'}
+HAS_CHIPS = {'weapon'}
 
 CAT_LABELS = {
     'all':       'All Items',
@@ -48,11 +49,15 @@ def open_file(file_path):
 
 def save_file(file_path, data):
     global MODE
+    print(f"Saving file in mode: {MODE}")
     if MODE == 'PC':
         enc_data = PC.encrypt_file(file_path)
         with open(file_path, 'wb') as f:
             f.write(enc_data)
-    else:
+
+    elif MODE == 'PS4':
+        data = SC.patch_save(data)
+
         with open(file_path, 'wb') as f:
             f.write(data)
 
@@ -408,7 +413,7 @@ class App(tk.Tk):
             with open(self.chips_path, 'r', encoding='utf-8') as f:
                 chips_raw = json.load(f)
             self.chips_by_id = {int(v, 16): k for k, v in chips_raw.items()}
-            self.chips_arr   = [{'id': 0, 'name': '— empty —'}] + \
+            self.chips_arr   = [{'id': 0, 'name': '— empty (DONT EDIT) —'}] + \
                                sorted([{'id': int(v, 16), 'name': k}
                                        for k, v in chips_raw.items()],
                                       key=lambda x: x['id'])
@@ -454,6 +459,9 @@ class App(tk.Tk):
             # 1. Patch self.data in-memory using original offsets
             write_changes(self.data, self.original, self.inventory)
 
+            if MODE == 'PS4':
+                self.data = SC.patch_save(self.data)
+            
             # 2. Write raw bytes to disk
             with open(sp, 'wb') as f:
                 f.write(self.data)
@@ -658,7 +666,7 @@ class App(tk.Tk):
                     row=row * 2, column=col_base, sticky='w',
                     padx=(px_left, 4), pady=(6, 0))
 
-                id_var  = tk.StringVar(value=chip['name'] or '— empty —')
+                id_var  = tk.StringVar(value=chip['name'] or '— empty (DONT EDIT) —')
                 eff_var = tk.DoubleVar(value=chip['effect'])
                 self._chip_vars.append((id_var, eff_var))
 
@@ -675,8 +683,6 @@ class App(tk.Tk):
 
             ttk.Button(inner, text='Apply Chips', style='Accent.TButton',
                        command=lambda: self._apply_chips(item)).pack(anchor='w', pady=(10, 0))
-            ttk.Button(inner, text='Clear All Chips',
-                       command=lambda: self._clear_chips(item)).pack(anchor='w', pady=(4, 0))
 
     # ── Actions ───────────────────────────────────────────────────────────────
     def _apply_replace(self, item, same_cat):
