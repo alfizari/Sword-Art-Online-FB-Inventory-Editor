@@ -166,6 +166,15 @@ def is_valid_inventory_slot(inv_data, pos, str_len, items_dict, max_chip_id):
 
     return True
 
+_MIN_BODY = {
+    'weapon':    71,
+    'costume':   71,
+    'accessory': 51,
+    'bullet':    71,
+    'material':   9,
+    'other':      9,
+}
+
 def parse_inventory(data, inventory_start, inventory_end, items_dict, chips_by_id):
     inv_data = data[inventory_start:inventory_end]
     max_chip_id = max(chips_by_id.keys()) if chips_by_id else 0xFF
@@ -184,12 +193,10 @@ def parse_inventory(data, inventory_start, inventory_end, items_dict, chips_by_i
         except UnicodeDecodeError:
             pos += 1; continue
 
-        # Must look like a valid item key by prefix — even if not in JSON
         category = item_category(key)
         if category == 'other':
             pos += 1; continue
 
-        # Still need structural validation
         if not is_valid_inventory_slot(inv_data, pos, str_len, items_dict, max_chip_id):
             pos += 1; continue
 
@@ -222,7 +229,28 @@ def parse_inventory(data, inventory_start, inventory_end, items_dict, chips_by_i
             'str_len':          str_len,
             'unknown':          not in_json,
         })
-        pos = chips_offset + 40
+
+        # Advance: scan forward from pos+1, but don't accept a new slot
+        # until we're past the minimum body size for this category.
+        # This prevents re-entering the current slot via its own suffix bytes
+        # while still catching slots that are smaller than chips_offset+40.
+        min_next = base + _MIN_BODY.get(category, 9)
+        next_pos = pos + 1
+        while next_pos < len(inv_data) - 4:
+            cl = struct.unpack_from('<I', inv_data, next_pos)[0]
+            if (4 <= cl <= 64
+                    and next_pos + 4 + cl <= len(inv_data)):
+                raw2 = bytes(inv_data[next_pos + 4: next_pos + 4 + cl])
+                if raw2[-1] == 0x00:
+                    try:
+                        ckey = raw2[:-1].decode('ascii')
+                        if (item_category(ckey) != 'other'
+                                and next_pos >= min_next):
+                            break
+                    except UnicodeDecodeError:
+                        pass
+            next_pos += 1
+        pos = next_pos
 
     return slots
 
