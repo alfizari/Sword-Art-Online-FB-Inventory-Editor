@@ -73,56 +73,91 @@ def item_category(key):
     if key.startswith('B'): return 'bullet'
     return 'other'
 
+def _find_char_name_offset(data, search_up_to=0x200):
+    """
+    Locate the offset of the length-prefixed player name in the file header.
+    Different save variants place this at different positions (e.g. 0x31 vs 0x35),
+    so we scan the first 0x200 bytes instead of hardcoding.
+    """
+    for off in range(0, search_up_to):
+        sl = struct.unpack_from('<I', data, off)[0]
+        if not (3 <= sl <= 20):
+            continue
+        end = off + 4 + sl
+        if end > len(data):
+            continue
+        raw = data[off + 4:end]
+        if raw[-1] != 0x00:
+            continue
+        try:
+            s = raw[:-1].decode('ascii')
+            if all(32 <= ord(c) < 127 for c in s) and len(s) >= 2:
+                return off
+        except UnicodeDecodeError:
+            pass
+    return 0x35  # original hardcoded value as last-resort fallback
+
+
 def main_character(data):
-    char_name_offset = 0x35
-    name_len = struct.unpack_from('<I', data, char_name_offset)[0]
+    char_name_offset = _find_char_name_offset(data)
+    name_len  = struct.unpack_from('<I', data, char_name_offset)[0]
     slot_bytes = bytes(data[char_name_offset: char_name_offset + 4 + name_len])
-    aob = bytes.fromhex("00000002000000000000000000000000")
+    aob = bytes.fromhex('00000002000000000000000000000000')
     offset = 0
+    best   = None                          # keep the LAST match, not the first
     while True:
         offset = bytes(data).find(slot_bytes, offset)
         if offset == -1:
-            return None
+            break
         if offset >= len(aob) and bytes(data[offset - len(aob): offset]) == aob:
-            return offset
+            best = offset
         offset += 1
+    return best                            # None only if truly not found
+
 
 def find_inventory_bounds(data, items_dict):
     player_offset = main_character(data)
     if player_offset is None:
+        # Genuine failure — no character block found at all
         return None, None
+
     search_region = bytes(data[player_offset:])
-    items_bytes = {key: key.encode('ascii') for key in items_dict}
+    items_bytes   = {key: key.encode('ascii') for key in items_dict}
     hit_positions = {}
     for key, b_key in items_bytes.items():
         pos = 0
         while True:
             pos = search_region.find(b_key, pos)
-            if pos == -1: break
+            if pos == -1:
+                break
             hit_positions[pos] = key
             pos += 1
-    sorted_hits = sorted(hit_positions)
+
+    sorted_hits     = sorted(hit_positions)
     first_match_pos = None
     for i in range(len(sorted_hits) - 1):
-        pos_curr = sorted_hits[i]
-        pos_next = sorted_hits[i + 1]
+        pos_curr  = sorted_hits[i]
+        pos_next  = sorted_hits[i + 1]
         gap_after = pos_next - pos_curr
         if i > 0 and pos_curr - sorted_hits[i - 1] < ITEM_SPACING_MIN:
             continue
         if ITEM_SPACING_MIN <= gap_after <= ITEM_SPACING_MAX:
             first_match_pos = pos_curr
             break
+
     if first_match_pos is None:
         return None, None
-    abs_first = player_offset + first_match_pos
-    FF16 = bytes.fromhex('FF' * 16)
-    boundary = bytes(data).rfind(FF16, player_offset, abs_first)
+
+    abs_first  = player_offset + first_match_pos
+    FF16       = bytes.fromhex('FF' * 16)
+    boundary   = bytes(data).rfind(FF16, player_offset, abs_first)
     if boundary == -1:
         return None, None
+
     inventory_start = boundary
-    ZERO_RUN = b'\x00' * 0x30
-    zero_pos = bytes(data).find(ZERO_RUN, abs_first)
-    inventory_end = zero_pos if zero_pos != -1 else len(data)
+    ZERO_RUN        = b'\x00' * 0x30
+    zero_pos        = bytes(data).find(ZERO_RUN, abs_first)
+    inventory_end   = zero_pos if zero_pos != -1 else len(data)
     return inventory_start, inventory_end
 
 def is_valid_inventory_slot(inv_data, pos, str_len, items_dict, max_chip_id):
