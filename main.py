@@ -99,31 +99,31 @@ def _find_char_name_offset(data, search_up_to=0x200):
 
 
 def main_character(data):
-    char_name_offset = _find_char_name_offset(data)
-    name_len  = struct.unpack_from('<I', data, char_name_offset)[0]
-    slot_bytes = bytes(data[char_name_offset: char_name_offset + 4 + name_len])
-    aob = bytes.fromhex('00000002000000000000000000000000')
-    offset = 0
-    best   = None                          # keep the LAST match, not the first
-    while True:
-        offset = bytes(data).find(slot_bytes, offset)
-        if offset == -1:
-            break
-        if offset >= len(aob) and bytes(data[offset - len(aob): offset]) == aob:
-            best = offset
-        offset += 1
-    return best                            # None only if truly not found
+    """
+    Find the main character/player block by searching for FF*16 patterns
+    that precede inventory data. This is more reliable than character name matching.
+    """
+    FF16 = bytes.fromhex('FF' * 16)
+    pos = data.find(FF16)
+    if pos == -1:
+        return None
+    return pos
 
 
 def find_inventory_bounds(data, items_dict):
+    """
+    Improved inventory boundary detection.
+    Searches for known item keys and determines inventory region bounds.
+    """
     player_offset = main_character(data)
     if player_offset is None:
-        # Genuine failure — no character block found at all
         return None, None
 
+    # Search forward from player block for the first item
     search_region = bytes(data[player_offset:])
-    items_bytes   = {key: key.encode('ascii') for key in items_dict}
+    items_bytes = {key: key.encode('ascii') for key in items_dict}
     hit_positions = {}
+    
     for key, b_key in items_bytes.items():
         pos = 0
         while True:
@@ -133,31 +133,27 @@ def find_inventory_bounds(data, items_dict):
             hit_positions[pos] = key
             pos += 1
 
-    sorted_hits     = sorted(hit_positions)
-    first_match_pos = None
-    for i in range(len(sorted_hits) - 1):
-        pos_curr  = sorted_hits[i]
-        pos_next  = sorted_hits[i + 1]
-        gap_after = pos_next - pos_curr
-        if i > 0 and pos_curr - sorted_hits[i - 1] < ITEM_SPACING_MIN:
-            continue
-        if ITEM_SPACING_MIN <= gap_after <= ITEM_SPACING_MAX:
-            first_match_pos = pos_curr
-            break
-
-    if first_match_pos is None:
+    if not hit_positions:
         return None, None
 
-    abs_first  = player_offset + first_match_pos
-    FF16       = bytes.fromhex('FF' * 16)
-    boundary   = bytes(data).rfind(FF16, player_offset, abs_first)
+    sorted_hits = sorted(hit_positions)
+    first_match_pos = sorted_hits[0]
+    abs_first = player_offset + first_match_pos
+    
+    # Look backwards for FF*16 boundary
+    FF16 = bytes.fromhex('FF' * 16)
+    boundary = bytes(data).rfind(FF16, player_offset, abs_first)
     if boundary == -1:
-        return None, None
+        # If no FF*16 found before first item, use player offset
+        inventory_start = player_offset
+    else:
+        inventory_start = boundary
 
-    inventory_start = boundary
-    ZERO_RUN        = b'\x00' * 0x30
-    zero_pos        = bytes(data).find(ZERO_RUN, abs_first)
-    inventory_end   = zero_pos if zero_pos != -1 else len(data)
+    # Look forward for end boundary (large zero run)
+    ZERO_RUN = b'\x00' * 0x30
+    zero_pos = bytes(data).find(ZERO_RUN, abs_first)
+    inventory_end = zero_pos if zero_pos != -1 else len(data)
+    
     return inventory_start, inventory_end
 
 def is_valid_inventory_slot(inv_data, pos, str_len, items_dict, max_chip_id):
@@ -187,7 +183,7 @@ def is_valid_inventory_slot(inv_data, pos, str_len, items_dict, max_chip_id):
                 except UnicodeDecodeError:
                     pass
 
-    # Rule 2: all 8 chip IDs must be within known range
+    # Rule 2: all 8 chip IDs must be within known range (or 0 for empty)
     for i in range(8):
         cp = chips_offset + i * 5
         if inv_data[cp] > max_chip_id:
@@ -267,8 +263,6 @@ def parse_inventory(data, inventory_start, inventory_end, items_dict, chips_by_i
 
         # Advance: scan forward from pos+1, but don't accept a new slot
         # until we're past the minimum body size for this category.
-        # This prevents re-entering the current slot via its own suffix bytes
-        # while still catching slots that are smaller than chips_offset+40.
         min_next = base + _MIN_BODY.get(category, 9)
         next_pos = pos + 1
         while next_pos < len(inv_data) - 4:
