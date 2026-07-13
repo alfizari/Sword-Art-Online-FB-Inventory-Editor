@@ -116,8 +116,8 @@ def find_inventory_bounds(data, items_dict):
     Searches for known item keys and determines inventory region bounds.
     """
     player_offset = main_character(data)
-    if player_offset is None:
-        return None, None
+    if player_offset is None or player_offset < 0x20000:
+        player_offset = 0x20000
 
     # Search forward from player block for the first item
     search_region = bytes(data[player_offset:])
